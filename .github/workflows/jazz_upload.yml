@@ -1,0 +1,93 @@
+name: JazzDrive Auto Uploader
+
+on:
+  workflow_dispatch:
+    inputs:
+      message_ids: { required: true }
+      folder_name: { required: true }
+      jazz_number: { required: true }
+      jazz_otp: { required: true }
+      chat_id: { required: true }
+      status_msg_id: { required: true }
+
+jobs:
+  upload:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repo
+        uses: actions/checkout@v3
+
+      - name: Install Dependencies
+        run: |
+          pip install pyrogram tgcrypto requests tqdm requests_toolbelt playwright nest_asyncio
+          playwright install chromium
+          playwright install-deps
+
+      - name: Run Magic Worker
+        env:
+          API_ID: ${{ secrets.API_ID }}
+          API_HASH: ${{ secrets.API_HASH }}
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+        run: |
+          cat << 'EOF' > worker.py
+          import os, asyncio, builtins, time
+          from pyrogram import Client
+          
+          API_ID = int(os.environ.get("API_ID"))
+          API_HASH = os.environ.get("API_HASH")
+          BOT_TOKEN = os.environ.get("BOT_TOKEN")
+          
+          CHAT_ID = int("${{ inputs.chat_id }}")
+          MSG_IDS = [int(i) for i in "${{ inputs.message_ids }}".split(",")]
+          STATUS_MSG = int("${{ inputs.status_msg_id }}")
+          
+          app = Client("gh_session", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+          
+          async def update_status(text):
+              try: await app.edit_message_text(CHAT_ID, STATUS_MSG, text)
+              except: pass
+
+          async def main():
+              await app.start()
+              await update_status("⚙️ **GitHub Action Started!**\n📥 Downloading files from Telegram...")
+              
+              # 1. Download
+              for m_id in MSG_IDS:
+                  msg = await app.get_messages(CHAT_ID, m_id)
+                  
+                  async def prog(current, total):
+                      pct = (current/total)*100
+                      if int(pct) % 25 == 0:
+                          print(f"DL: {pct:.1f}%")
+                          
+                  await app.download_media(msg, progress=prog)
+              
+              await update_status("✅ **Download Complete!**\n🚀 Starting JazzDrive Login...")
+              
+              # 2. Mock Login
+              login_inputs = ["${{ inputs.jazz_number }}", "${{ inputs.jazz_otp }}"]
+              builtins.input = lambda prompt: login_inputs.pop(0)
+              import login
+              await login.login_step()
+              
+              await update_status("✅ **Login Success!**\n🚀 Starting Upload to JazzDrive...")
+              
+              # 3. Mock Upload
+              # Inputs for upload.py: Select File(0=All/Auto handled if modified, or just loop files), Destination, Merge/New
+              # Since upload.py requires input for each file natively, we mock it to select the first downloaded file and folder.
+              upload_inputs = ["0", "${{ inputs.folder_name }}", "1"]
+              def mock_upload_input(prompt):
+                  if upload_inputs: return upload_inputs.pop(0)
+                  return "1"
+              builtins.input = mock_upload_input
+              
+              import upload
+              # Monkey patch tqdm locally so it doesn't crash action
+              upload.main()
+              
+              await update_status("🏁 **Uploading Completed Successfully!**")
+              await app.stop()
+
+          asyncio.run(main())
+          EOF
+          python worker.py
